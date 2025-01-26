@@ -1,0 +1,43 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Debug Rust Program",
+        "type": "lldb",
+        "request": "launch",
+        "program": "${workspaceFolder}/target/debug/${workspaceFolderBasename}",
+        "args": [],
+        "cwd": "${workspaceFolder}",
+        "sourceLanguages": ["rust"],
+        "env": {
+          "RUST_BACKTRACE": "1"
+        },
+        "preLaunchTask": "cargo build"
+      },
+      {
+        "name": "Debug with Copilot Auto Fix",
+        "type": "lldb",
+        "request": "launch",
+        "program": "${workspaceFolder}/target/debug/${workspaceFolderBasename}",
+        "args": [],
+        "cwd": "${workspaceFolder}",
+        "sourceLanguages": ["rust"],
+        "env": {
+          "RUST_BACKTRACE": "1"
+        },
+        "preLaunchTask": "copilot-auto-fix"
+      }
+    ],
+    "tasks": {
+      "version": "2.0.0",
+      "tasks": [
+        {
+          "label": "copilot-auto-fix",
+          "type": "shell",
+          "command": "cargo clippy --fix && cargo build",
+          "problemMatcher": ["$rustc"]
+        }
+      ]
+    }
+  }
+  

@@ -47,6 +47,9 @@ pub enum FormatMismatchVariant {
   /// - ✓ `rcFile.sortExports` is enabled
   /// - ✘ The `exports` property is not sorted
   ExportsPropertyIsNotSorted,
+  /// - ✓ `rcFile.formatScripts` is enabled
+  /// - ✘ Scripts are not properly formatted
+  ScriptsNotFormatted,
 }
 
 impl PackageJson {

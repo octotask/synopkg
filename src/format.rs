@@ -165,3 +165,30 @@ fn get_locale_collator() -> Collator {
   let collator: Collator = Collator::try_new(&locale_en.into(), options).unwrap();
   collator
 }
+
+/// Check if scripts follow formatting guidelines
+pub fn check_script_formatting(scripts: &Value) -> bool {
+    if let Value::Object(scripts) = scripts {
+        // Check format-related scripts exist
+        let has_check_format = scripts.contains_key("check:format");
+        let has_format = scripts.contains_key("format");
+        let has_format_biome = scripts.contains_key("format:biome");
+        
+        // Check values match expected patterns
+        let check_format_valid = scripts.get("check:format")
+            .map(|v| v.as_str() == Some("npm run check:biome"))
+            .unwrap_or(false);
+            
+        let format_valid = scripts.get("format")
+            .map(|v| v.as_str() == Some("npm run format:biome"))
+            .unwrap_or(false);
+            
+        let format_biome_valid = scripts.get("format:biome")
+            .map(|v| v.as_str().unwrap_or("").contains("biome check"))
+            .unwrap_or(false);
+
+        return has_check_format && has_format && has_format_biome &&
+               check_format_valid && format_valid && format_biome_valid;
+    }
+    false
+}

@@ -7,6 +7,16 @@ use {
   std::{env, path::PathBuf},
 };
 
+const DEFAULT_SOURCE_PATTERNS: [&str; 2] = ["package.json", "packages/*/package.json"];
+const ALL_SHOW_OPTIONS: [&str; 5] = ["ignored", "instances", "hints", "statuses", "all"];
+const ALL_SORT_OPTIONS: [&str; 2] = ["count", "name"];
+const ALL_LOG_LEVELS: [&str; 5] = ["off", "error", "warn", "info", "debug"];
+const ALL_SPECIFIER_TYPES: [&str; 16] = [
+    "alias", "exact", "file", "git", "latest", "major", "minor", "missing",
+    "range", "range-complex", "range-major", "range-minor", "tag",
+    "unsupported", "url", "workspace-protocol"
+];
+
 #[derive(Debug)]
 pub enum Subcommand {
   Lint,
@@ -63,37 +73,39 @@ pub struct Cli {
 }
 
 impl Cli {
-  pub fn parse() -> Cli {
-    match create().get_matches().subcommand() {
-      Some(("lint", matches)) => Cli::from_arg_matches(Subcommand::Lint, matches),
-      Some(("fix", matches)) => Cli::from_arg_matches(Subcommand::Fix, matches),
-      Some(("format", matches)) => Cli::from_arg_matches(Subcommand::Format, matches),
-      _ => {
-        std::process::exit(1);
-      }
+  pub fn parse() -> Result<Cli, String> {
+    let matches = create().get_matches();
+    match matches.subcommand() {
+      Some(("lint", matches)) => Ok(Cli::from_arg_matches(Subcommand::Lint, matches)?),
+      Some(("fix", matches)) => Ok(Cli::from_arg_matches(Subcommand::Fix, matches)?),
+      Some(("format", matches)) => Ok(Cli::from_arg_matches(Subcommand::Format, matches)?),
+      _ => Err("Invalid subcommand".to_string()),
     }
   }
 
   /// Create a new `Cli` from CLI arguments provided by the user
-  fn from_arg_matches(subcommand: Subcommand, matches: &ArgMatches) -> Self {
-    Self {
-      check: matches!(&subcommand, Subcommand::Lint) || matches!(&subcommand, Subcommand::Format) && matches.get_flag("check"),
-      cwd: env::current_dir().unwrap(),
-      // @TODO
+  fn from_arg_matches(subcommand: Subcommand, matches: &ArgMatches) -> Result<Self, String> {
+    let cwd = env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?;
+    
+    Ok(Self {
+      check: matches!(&subcommand, Subcommand::Lint) || 
+            matches!(&subcommand, Subcommand::Format) && matches.get_flag("check"),
+      cwd,
       filter: get_filters(matches),
       disable_ansi: matches.get_flag("no-ansi"),
       inspect_formatting: matches!(&subcommand, Subcommand::Format),
-      inspect_mismatches: matches!(&subcommand, Subcommand::Lint) || matches!(&subcommand, Subcommand::Fix),
+      inspect_mismatches: matches!(&subcommand, Subcommand::Lint) || 
+                        matches!(&subcommand, Subcommand::Fix),
       log_levels: get_log_levels(matches),
-      sort: get_order_by(matches),
+      sort: get_order_by(matches)?,
       show_ignored: should_show(matches, "ignored"),
-      show_hints: should_show(matches, "hints"),
+      show_hints: should_show(matches, "hints"), 
       show_instances: should_show(matches, "instances"),
       show_packages: should_show(matches, "packages"),
       show_status_codes: should_show(matches, "statuses"),
       source_patterns: get_patterns(matches, "source"),
       subcommand,
-    }
+    })
   }
 }
 
@@ -101,189 +113,46 @@ fn create() -> Command {
   Command::new(crate_name!())
     .about(crate_description!())
     .version(crate_version!())
-    .subcommand(
-      Command::new("lint")
-        .about("Lint all versions and ranges and exit with 0 or 1 based on whether all files match your Synopkg configuration file")
-        .after_long_help(additional_help())
-        .arg(
-          Arg::new("dependencies")
-            .long("dependencies")
-            .long_help(cformat!(
-              r#"Only display dependencies whose <bold>name</bold> matches this <bold>glob pattern</bold>
+    .subcommand(create_lint_command())
+    .subcommand(create_fix_command())
+    .subcommand(create_format_command())
+}
 
-<bold><underline>Important:</underline></bold>
-1. You <underline>must</> add quotes around your filter so your shell doesn't
-   interpret it.
-2. --dependencies only affects what synopkg will display, it will
-   still inspect and exit 1/0 based on every dependency in your project.
+fn create_lint_command() -> Command {
+  Command::new("lint")
+    .about("Lint all versions and ranges and exit with 0 or 1 based on whether all files match your Synopkg configuration file")
+    .after_long_help(additional_help())
+    .arg(create_dependencies_arg())
+    .arg(create_dependency_types_arg())
+    .arg(create_specifier_types_arg())
+    .arg(log_levels_option("lint"))
+    .arg(no_ansi_option("lint"))
+    .arg(create_sort_arg())
+    .arg(create_show_arg())
+    .arg(source_option("lint"))
+}
 
-<bold><underline>Examples:</underline></bold>
-<dim>Exact match for "react"</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies 'react'</>
-<dim>Substring match for "react"</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies '**react**'</>
-<dim>All dependencies under the AWS SDK scope</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies '@aws-sdk/**'</>
-<dim>Exact match for "react" or "webpack" (2 approaches)</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies 'react' --dependencies 'webpack'</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies '{has_braces}'</>
-<dim>Substring match for "react" or "webpack"  (2 approaches)</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies '**react**' --dependencies '**webpack**'</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies '**{has_braces}**'</>"#, has_braces="{react,webpack}"
-            ))
-            .action(clap::ArgAction::Append),
-        )
-        .arg(
-          Arg::new("dependency-types")
-            .long("dependency-types")
-            .long_help(cformat!(
-              r#"Only display dependencies of the given type(s)
+fn create_fix_command() -> Command {
+  Command::new("fix")
+    .about("Ensure that multiple packages requiring the same dependency define the same version, so that every package requires eg. `react@16.4.2`, instead of a combination of `react@16.4.2`, `react@0.15.9`, and `react@16.0.0`")
+    .after_long_help(additional_help())
+    .arg(log_levels_option("fix"))
+    .arg(no_ansi_option("fix"))
+    .arg(source_option("fix"))
+}
 
-<bold><underline>Important:</underline></bold>
---dependency-types only affects what synopkg will display, it will
-still inspect and exit 1/0 based on every dependency in your project.
-
-<bold><underline>Default Values:</underline></bold>
-<blue>dev</>            devDependencies
-<blue>local</>          version
-<blue>overrides</>      overrides
-<blue>peer</>           peerDependencies
-<blue>pnpmOverrides</>  pnpm.overrides
-<blue>prod</>           dependencies
-<blue>resolutions</>    resolutions
-
-<bold><underline>Custom Values:</underline></bold>
-See <blue>https://synopkg.github.io/synopkg/config/custom-types/</>
-
-<bold><underline>Examples:</underline></bold>
-<dim>devDependencies only</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --dependency-types dev
-<dim>dependencies and devDependencies only</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --dependency-types dev,prod"#
-            ))
-            .value_delimiter(','),
-        )
-        .arg(
-          Arg::new("specifier-types")
-            .long("specifier-types")
-            .long_help(cformat!(
-              r#"Only display instances whose version specifiers are of the given type(s)
-
-<bold><underline>Important:</underline></bold>
---specifier-types only affects what synopkg will display, it will
-still inspect and exit 1/0 based on every dependency in your project.
-
-<bold><underline>Values:</underline></bold>
-<blue>alias</>               <yellow>npm:@preact/compat</>
-<blue>exact</>               <yellow>1.2.3</>, <yellow>1.2.3-alpha</>, <yellow>1.2.3-rc.1</>
-<blue>file</>                <yellow>file:./path/to/package</>
-<blue>git</>                 <yellow>git+https://github.com/user/repo.git</>
-<blue>latest</>              <yellow>latest</>, <yellow>*</>
-<blue>major</>               <yellow>1</>
-<blue>minor</>               <yellow>1.2</>
-<blue>missing</>             A local package.json with a missing .version
-<blue>range</>               <yellow>^1.2.3</>, <yellow>^1.2.3-alpha</>, <yellow>^1.2.3-rc.1</>
-<blue>range-complex</>       <yellow>^1.2.3-alpha || ~1.2.3-rc.1</>
-<blue>range-major</>         <yellow>^1</>
-<blue>range-minor</>         <yellow>^1.2</>
-<blue>tag</>                 <yellow>alpha</>
-<blue>unsupported</>         <yellow>wtf|#|broken</>
-<blue>url</>                 <yellow>https://example.com/package</>
-<blue>workspace-protocol</>  <yellow>workspace:*</>
-
-<bold><underline>Examples:</underline></bold>
-<dim>Exact versions only</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --show instances --specifier-types exact
-<dim>Missing or unsupported versions</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --show instances --specifier-types missing,unsupported
-<dim>Latest or workspace protocol only</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --show instances --specifier-types latest,workspace-protocol"#
-            ))
-            .value_delimiter(',')
-            .value_parser([
-              "alias",
-              "exact",
-              "file",
-              "git",
-              "latest",
-              "major",
-              "minor",
-              "missing",
-              "range",
-              "range-complex",
-              "range-major",
-              "range-minor",
-              "tag",
-              "unsupported",
-              "url",
-              "workspace-protocol",
-            ]),
-        )
-        .arg(log_levels_option("lint"))
-        .arg(no_ansi_option("lint"))
-        .arg(
-          Arg::new("sort")
-            .long("sort")
-            .long_help(cformat!(
-              r#"Change the order in which dependencies are displayed
-
-<bold><underline>Examples:</underline></bold>
-<dim>Sort by count, in descending order</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --sort count</>
-<dim>Sort A-Z by name</>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --sort name</>"#
-            ))
-            .action(clap::ArgAction::Set)
-            .value_parser(["count", "name"])
-            .default_value("name"),
-        )
-        .arg(
-          Arg::new("show")
-            .long("show")
-            .long_help(cformat!(
-              r#"Control what information is displayed in terminal output
-
-<bold><underline>Values:</underline></bold>
-<blue>ignored</>    Show instances and dependencies which synopkg is ignoring
-<blue>instances</>  Show every instance of every dependency
-<blue>hints</>      Show a hint alongside dependencies developed in this repo
-<blue>statuses</>   Show specifically how/why a dependency or instance is valid or invalid
-<blue>all</>        Shorthand to enable all of the above
-
-<bold><underline>Examples:</underline></bold>
-<dim>Only opt into showing status codes</dim>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --show statuses</>
-<dim>Show all instances, including ignored</dim>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --show ignored,instances</>
-<dim>Show highest level of detail</dim>
-<dim>$</dim> <blue><bold>synopkg lint</bold> --show all</>"#
-            ))
-            .value_delimiter(',')
-            .value_parser(["ignored", "instances", "hints", "statuses", "all"])
-            .default_value("hints,statuses"),
-        )
-        .arg(source_option("lint")),
-    )
-    .subcommand(
-      Command::new("fix")
-        .about("Ensure that multiple packages requiring the same dependency define the same version, so that every package requires eg. `react@16.4.2`, instead of a combination of `react@16.4.2`, `react@0.15.9`, and `react@16.0.0`")
-        .after_long_help(additional_help())
-        .arg(log_levels_option("fix"))
-        .arg(no_ansi_option("fix"))
-        .arg(source_option("fix")),
-    )
-    .subcommand(
-      Command::new("format")
-        .about("Ensure that package.json files follow a conventional format, where fields appear in a predictable order and nested fields are ordered alphabetically. Shorthand properties are used where available")
-        .after_long_help(additional_help())
-        .arg(Arg::new("check").long("check").long_help(cformat!(r#"Lint formatting instead of fixing it"#)).action(clap::ArgAction::SetTrue))
-        .arg(log_levels_option("format"))
-        .arg(no_ansi_option("format"))
-        .arg(
-          Arg::new("show")
-            .long("show")
-            .long_help(cformat!(
-              r#"Control what information is displayed in terminal output
+fn create_format_command() -> Command {
+  Command::new("format")
+    .about("Ensure that package.json files follow a conventional format, where fields appear in a predictable order and nested fields are ordered alphabetically. Shorthand properties are used where available")
+    .after_long_help(additional_help())
+    .arg(Arg::new("check").long("check").long_help(cformat!(r#"Lint formatting instead of fixing it"#)).action(clap::ArgAction::SetTrue))
+    .arg(log_levels_option("format"))
+    .arg(no_ansi_option("format"))
+    .arg(
+      Arg::new("show")
+        .long("show")
+        .long_help(cformat!(
+          r#"Control what information is displayed in terminal output
 
 <bold><underline>Values:</underline></bold>
 <blue>packages</>   Show formatting status of each package.json file
@@ -291,14 +160,13 @@ still inspect and exit 1/0 based on every dependency in your project.
 <bold><underline>Examples:</underline></bold>
 <dim>Show highest level of detail</dim>
 <dim>$</dim> <blue><bold>synopkg format</bold> --show packages</>"#
-            ))
-            .value_delimiter(',')
-            .value_parser([
-              "packages",
-            ])
-        )
-        .arg(source_option("format")),
+        ))
+        .value_delimiter(',')
+        .value_parser([
+          "packages",
+        ])
     )
+    .arg(source_option("format"))
 }
 
 fn get_filters(matches: &ArgMatches) -> Option<GroupSelector> {
@@ -314,17 +182,16 @@ fn get_filters(matches: &ArgMatches) -> Option<GroupSelector> {
   }
 }
 
-fn get_order_by(matches: &ArgMatches) -> SortBy {
+fn get_order_by(matches: &ArgMatches) -> Result<SortBy, String> {
   matches
     .try_get_one::<String>("sort")
-    .ok()
-    .flatten()
+    .map_err(|e| format!("Failed to get sort option: {}", e))?
     .map(|sort| match sort.as_str() {
-      "count" => SortBy::Count,
-      "name" => SortBy::Name,
-      _ => unreachable!(),
+      "count" => Ok(SortBy::Count),
+      "name" => Ok(SortBy::Name),
+      _ => Err("Invalid sort option".to_string()),
     })
-    .unwrap_or(SortBy::Name)
+    .unwrap_or(Ok(SortBy::Name))
 }
 
 fn get_patterns(matches: &ArgMatches, option_name: &str) -> Vec<String> {
@@ -389,7 +256,7 @@ fn log_levels_option(command: &str) -> Arg {
 <dim>$</dim> <blue><bold>synopkg {command}</bold> --log-levels error,warn,info,debug</>"#
     ))
     .value_delimiter(',')
-    .value_parser(["off", "error", "warn", "info", "debug"])
+    .value_parser(ALL_LOG_LEVELS)
     .default_value("error,warn,info")
 }
 
@@ -446,4 +313,147 @@ fn validate_source(value: &str) -> Result<String, String> {
   } else {
     Err("must end with 'package.json'".to_string())
   }
+}
+
+fn create_dependencies_arg() -> Arg {
+  Arg::new("dependencies")
+    .long("dependencies")
+    .long_help(cformat!(
+      r#"Only display dependencies whose <bold>name</bold> matches this <bold>glob pattern</bold>
+
+<bold><underline>Important:</underline></bold>
+1. You <underline>must</> add quotes around your filter so your shell doesn't
+   interpret it.
+2. --dependencies only affects what synopkg will display, it will
+   still inspect and exit 1/0 based on every dependency in your project.
+
+<bold><underline>Examples:</underline></bold>
+<dim>Exact match for "react"</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies 'react'</>
+<dim>Substring match for "react"</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies '**react**'</>
+<dim>All dependencies under the AWS SDK scope</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies '@aws-sdk/**'</>
+<dim>Exact match for "react" or "webpack" (2 approaches)</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies 'react' --dependencies 'webpack'</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies '{has_braces}'</>
+<dim>Substring match for "react" or "webpack"  (2 approaches)</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies '**react**' --dependencies '**webpack**'</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --dependencies '**{has_braces}**'</>"#, has_braces="{react,webpack}"
+    ))
+    .action(clap::ArgAction::Append)
+}
+
+fn create_dependency_types_arg() -> Arg {
+  Arg::new("dependency-types")
+    .long("dependency-types")
+    .long_help(cformat!(
+      r#"Only display dependencies of the given type(s)
+
+<bold><underline>Important:</underline></bold>
+--dependency-types only affects what synopkg will display, it will
+still inspect and exit 1/0 based on every dependency in your project.
+
+<bold><underline>Default Values:</underline></bold>
+<blue>dev</>            devDependencies
+<blue>local</>          version
+<blue>overrides</>      overrides
+<blue>peer</>           peerDependencies
+<blue>pnpmOverrides</>  pnpm.overrides
+<blue>prod</>           dependencies
+<blue>resolutions</>    resolutions
+
+<bold><underline>Custom Values:</underline></bold>
+See <blue>https://synopkg.github.io/synopkg/config/custom-types/</>
+
+<bold><underline>Examples:</underline></bold>
+<dim>devDependencies only</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --dependency-types dev
+<dim>dependencies and devDependencies only</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --dependency-types dev,prod"#
+    ))
+    .value_delimiter(',')
+}
+
+fn create_specifier_types_arg() -> Arg {
+  Arg::new("specifier-types")
+    .long("specifier-types")
+    .long_help(cformat!(
+      r#"Only display instances whose version specifiers are of the given type(s)
+
+<bold><underline>Important:</underline></bold>
+--specifier-types only affects what synopkg will display, it will
+still inspect and exit 1/0 based on every dependency in your project.
+
+<bold><underline>Values:</underline></bold>
+<blue>alias</>               <yellow>npm:@preact/compat</>
+<blue>exact</>               <yellow>1.2.3</>, <yellow>1.2.3-alpha</>, <yellow>1.2.3-rc.1</>
+<blue>file</>                <yellow>file:./path/to/package</>
+<blue>git</>                 <yellow>git+https://github.com/user/repo.git</>
+<blue>latest</>              <yellow>latest</>, <yellow>*</>
+<blue>major</>               <yellow>1</>
+<blue>minor</>               <yellow>1.2</>
+<blue>missing</>             A local package.json with a missing .version
+<blue>range</>               <yellow>^1.2.3</>, <yellow>^1.2.3-alpha</>, <yellow>^1.2.3-rc.1</>
+<blue>range-complex</>       <yellow>^1.2.3-alpha || ~1.2.3-rc.1</>
+<blue>range-major</>         <yellow>^1</>
+<blue>range-minor</>         <yellow>^1.2</>
+<blue>tag</>                 <yellow>alpha</>
+<blue>unsupported</>         <yellow>wtf|#|broken</>
+<blue>url</>                 <yellow>https://example.com/package</>
+<blue>workspace-protocol</>  <yellow>workspace:*</>
+
+<bold><underline>Examples:</underline></bold>
+<dim>Exact versions only</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --show instances --specifier-types exact
+<dim>Missing or unsupported versions</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --show instances --specifier-types missing,unsupported
+<dim>Latest or workspace protocol only</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --show instances --specifier-types latest,workspace-protocol"#
+    ))
+    .value_delimiter(',')
+    .value_parser(ALL_SPECIFIER_TYPES)
+}
+
+fn create_sort_arg() -> Arg {
+  Arg::new("sort")
+    .long("sort")
+    .long_help(cformat!(
+      r#"Change the order in which dependencies are displayed
+
+<bold><underline>Examples:</underline></bold>
+<dim>Sort by count, in descending order</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --sort count</>
+<dim>Sort A-Z by name</>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --sort name</>"#
+    ))
+    .action(clap::ArgAction::Set)
+    .value_parser(ALL_SORT_OPTIONS)
+    .default_value("name")
+}
+
+fn create_show_arg() -> Arg {
+  Arg::new("show")
+    .long("show")
+    .long_help(cformat!(
+      r#"Control what information is displayed in terminal output
+
+<bold><underline>Values:</underline></bold>
+<blue>ignored</>    Show instances and dependencies which synopkg is ignoring
+<blue>instances</>  Show every instance of every dependency
+<blue>hints</>      Show a hint alongside dependencies developed in this repo
+<blue>statuses</>   Show specifically how/why a dependency or instance is valid or invalid
+<blue>all</>        Shorthand to enable all of the above
+
+<bold><underline>Examples:</underline></bold>
+<dim>Only opt into showing status codes</dim>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --show statuses</>
+<dim>Show all instances, including ignored</dim>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --show ignored,instances</>
+<dim>Show highest level of detail</dim>
+<dim>$</dim> <blue><bold>synopkg lint</bold> --show all</>"#
+    ))
+    .value_delimiter(',')
+    .value_parser(ALL_SHOW_OPTIONS)
+    .default_value("hints,statuses")
 }

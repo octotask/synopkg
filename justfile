@@ -17,6 +17,10 @@ install-system-dependencies:
     cargo +stable install cargo-llvm-cov
     # https://github.com/killercup/cargo-edit
     cargo +stable install cargo-edit
+    # Install changelog generator
+    cargo +stable install git-cliff
+    # Install sccache for faster builds
+    cargo +stable install sccache
 
 # ==============================================================================
 # Write
@@ -78,7 +82,7 @@ run-ci-action:
 # Run all tests and generate a coverage report
 coverage:
     rm -rf target/llvm-cov/html
-    cargo llvm-cov test --html --ignore-run-fail --ignore-filename-regex '(_test.rs|\/test\/)'
+    cargo llvm-cov test --html --ignore-run-fail --ignore-filename-regex '(_test.rs|\/test\/)' --fail-under-lines 80
 
 # Open coverage report (on http server to allow Dark Reader Browser Extension)
 serve-coverage:
@@ -275,3 +279,7 @@ publish-npm-root-package:
 
     cd "$NODE_ROOT_PKG_DIR_PATH"
     npm publish --access public --tag alpha
+
+# Generate changelog
+changelog:
+    git-cliff --output CHANGELOG.md
